@@ -100,7 +100,7 @@ if [[ "${CI_ARCH}" == "linux/amd64" ]]; then
     check_static # Binary should not rely on any dynamic interpreter
     check_libs "" # No dependency on any shared library is intended
     check_file "ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, with debug_info, not stripped"
-else
+  else
     check_machine "ELF64" "Advanced Micro Devices X86-64"
     check_libs "[libgmp.so.10] [libidn2.so.0] [libc.musl-x86_64.so.1]"
     check_file "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-musl-x86_64.so.1, with debug_info, not stripped"
@@ -149,10 +149,16 @@ elif [[ "${CI_ARCH}" == "linux/arm/v7" ]]; then
 
 elif [[ "${CI_ARCH}" == "linux/arm64/v8" || "${CI_ARCH}" == "linux/arm64" ]]; then
 
-  check_machine "ELF64" "AArch64"
-  check_static # Binary should not rely on any dynamic interpreter
-  check_libs "" # No dependency on any shared library is intended
-  check_file "ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped"
+  if [[ "${STATIC}" == "true" ]]; then
+    check_machine "ELF64" "AArch64"
+    check_static # Binary should not rely on any dynamic interpreter
+    check_libs "" # No dependency on any shared library is intended
+    check_file "ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped"
+  else
+    check_machine "ELF64" "AArch64"
+    check_libs "[libgmp.so.10] [libidn2.so.0] [libc.musl-aarch64.so.1]"
+    check_file "ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-musl-aarch64.so.1, with debug_info, not stripped"
+  fi
 
 elif [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
 

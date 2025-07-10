@@ -12,6 +12,8 @@ ARG GIT_TAG="test"
 ENV GIT_TAG=${GIT_TAG}
 ARG BUILD_OPTS=""
 ENV BUILD_OPTS=${BUILD_OPTS}
+ARG STATIC=""
+ENV STATIC=${STATIC}
 
 # Setting TERM is needed for pretty output in BATS tests
 ENV TERM=xterm

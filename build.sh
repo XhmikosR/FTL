@@ -143,7 +143,6 @@ fi
 if [[ -n "${clang}" ]]; then
     export CC=clang
     export CXX=clang++
-    export STATIC="false"
 fi
 
 # Configure build, pass CMake CACHE entries if present
