@@ -97,7 +97,7 @@ jobs:
             bin_name: pihole-FTL-arm64-clang
             runner: ubuntu-24.04-arm
             build_opts: clang
-            static: "true"
+            static: "false"
 #          - platform: linux/riscv64
 #            bin_name: pihole-FTL-riscv64
 #            runner: ubuntu-24.04-arm
