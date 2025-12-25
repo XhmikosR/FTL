@@ -29,6 +29,7 @@ static int search_table(struct ftl_conn *api, const char *item,
 	if(ids != NULL)
 	{
 		// Set item to NULL to indicate that we are searching for IDs
+		// instead of domains
 		item = NULL;
 		// Strip "[" and "]" from ids
 		ids[strlen(ids)-1] = '\0';
@@ -116,14 +117,17 @@ static int search_gravity(struct ftl_conn *api, const char *punycode, cJSON *arr
 			return ret;
 
 		// Search for ABP matches in (anti/)gravity
-		*abp_patterns = gen_abp_patterns(punycode, antigravity);
+		*abp_patterns = gen_abp_patterns(punycode);
 		cJSON *abp_pattern = NULL;
 		cJSON_ArrayForEach(abp_pattern, *abp_patterns)
 		{
 			const char *pattern = cJSON_GetStringValue(abp_pattern);
 			if(pattern == NULL)
 				continue;
-			ret = search_table(api, pattern, table, NULL, limit, N, partial, array);
+
+			// Skip leading "@@" for gravity matches
+			const char *this_pattern = antigravity ? pattern : pattern + 2;
+			ret = search_table(api, this_pattern, table, NULL, limit, N, partial, array);
 			if(ret != 200)
 				return ret;
 		}
@@ -205,6 +209,19 @@ int api_search(struct ftl_conn *api)
 		return ret;
 	}
 
+	// Match partially against regex filters using LIKE '%term%' matching
+	// (works only for simple regexes)
+	unsigned int Nregex = 0u;
+	if(partial)
+	{
+		ret = search_table(api, punycode, GRAVITY_DOMAINLIST_ALL_REGEX, NULL, limit, &Nregex, partial, domains);
+		if(ret != 200)
+		{
+			free(punycode);
+			return ret;
+		}
+	}
+
 	// Search through gravity
 	cJSON *gravity = JSON_NEW_ARRAY();
 	cJSON *gravity_patterns = NULL;
@@ -233,11 +250,10 @@ int api_search(struct ftl_conn *api)
 	cJSON *allow_ids = cJSON_GetObjectItem(regex_ids, "allow");
 
 	// Get allow regex filters
-	unsigned int Nregex = 0u;
 	if(cJSON_GetArraySize(allow_ids) > 0)
 	{
 		char *allow_list = cJSON_PrintUnformatted(allow_ids);
-		ret = search_table(api,punycode, GRAVITY_DOMAINLIST_ALLOW_REGEX, allow_list, limit, &Nregex, false, domains);
+		ret = search_table(api, NULL, GRAVITY_DOMAINLIST_ALLOW_REGEX, allow_list, limit, &Nregex, false, domains);
 		free(allow_list);
 		if(ret != 200)
 		{
@@ -249,7 +265,7 @@ int api_search(struct ftl_conn *api)
 	if(cJSON_GetArraySize(deny_ids) > 0)
 	{
 		char *deny_list = cJSON_PrintUnformatted(deny_ids);
-		ret = search_table(api, punycode, GRAVITY_DOMAINLIST_DENY_REGEX, deny_list, limit, &Nregex, false, domains);
+		ret = search_table(api, NULL, GRAVITY_DOMAINLIST_DENY_REGEX, deny_list, limit, &Nregex, false, domains);
 		free(deny_list);
 		if(ret != 200)
 		{

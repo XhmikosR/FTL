@@ -17,8 +17,6 @@
 #include "gravity-db.h"
 // cli_mode
 #include "args.h"
-// cleanup()
-#include "daemon.h"
 // main_pid()
 #include "signals.h"
 // struct config
@@ -359,9 +357,9 @@ static int _add_message(const enum message_type type,
 		return -1;
 	}
 
-	sqlite3 *db;
+	sqlite3 *db = dbopen(false, false);
 	// Open database connection
-	if((db = dbopen(false, false)) == NULL)
+	if(db == NULL)
 		// Reason for failure is logged in dbopen()
 		return -1;
 
@@ -380,8 +378,6 @@ static int _add_message(const enum message_type type,
 	{
 		log_err("add_message(type=%u, message=%s) - Failed to bind type DELETE: %s",
 			type, message, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
-		sqlite3_finalize(stmt);
 		goto end_of_add_message;
 	}
 
@@ -390,12 +386,11 @@ static int _add_message(const enum message_type type,
 	{
 		log_err("add_message(type=%u, message=%s) - Failed to bind message DELETE: %s",
 			type, message, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
-		sqlite3_finalize(stmt);
 		goto end_of_add_message;
 	}
 
-	// Execute and finalize
+	// Execute and finalize (we accept both SQLITE_OK = removed and
+	// SQLITE_DONE = nothing to remove)
 	if((rc = sqlite3_step(stmt)) != SQLITE_OK && rc != SQLITE_DONE)
 	{
 		log_err("add_message(type=%u, message=%s) - SQL error step DELETE: %s",
@@ -423,8 +418,6 @@ static int _add_message(const enum message_type type,
 	{
 		log_err("add_message(type=%u, message=%s) - Failed to bind type: %s",
 		        type, message, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
-		sqlite3_finalize(stmt);
 		goto end_of_add_message;
 	}
 
@@ -433,8 +426,6 @@ static int _add_message(const enum message_type type,
 	{
 		log_err("add_message(type=%u, message=%s) - Failed to bind message: %s",
 		        type, message, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
-		sqlite3_finalize(stmt);
 		goto end_of_add_message;
 	}
 
@@ -489,15 +480,19 @@ static int _add_message(const enum message_type type,
 		goto end_of_add_message;
 	}
 
-	// Final database handling
-	sqlite3_clear_bindings(stmt);
-	sqlite3_reset(stmt);
-	sqlite3_finalize(stmt);
-
-	// Get row ID of the newly added message
-	rowid = sqlite3_last_insert_rowid(db);
-
 end_of_add_message: // Close database connection
+
+	// Final database handling
+	if(stmt != NULL)
+	{
+		sqlite3_clear_bindings(stmt);
+		sqlite3_reset(stmt);
+		sqlite3_finalize(stmt);
+
+		// Get row ID of the newly added message
+		rowid = sqlite3_last_insert_rowid(db);
+	}
+
 	dbclose(&db);
 
 	return rowid;
@@ -1018,7 +1013,7 @@ static void format_gravity_restored_message(char *plain, const int sizeof_plain,
 	}
 }
 
-int count_messages(const bool filter_dnsmasq_warnings)
+int count_messages(void)
 {
 	int count = 0;
 
@@ -1035,7 +1030,9 @@ int count_messages(const bool filter_dnsmasq_warnings)
 
 	// Get message
 	sqlite3_stmt* stmt = NULL;
-	const char *querystr = filter_dnsmasq_warnings ?  "SELECT COUNT(*) FROM message WHERE type != 'DNSMASQ_WARN'" : "SELECT COUNT(*) FROM message";
+	const char *querystr = config.misc.hide_dnsmasq_warn.v.b ?
+			"SELECT COUNT(*) FROM message WHERE type != 'DNSMASQ_WARN'" :
+			"SELECT COUNT(*) FROM message";
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
 	if( rc != SQLITE_OK ){
 		log_err("count_messages() - SQL error prepare SELECT: %s",

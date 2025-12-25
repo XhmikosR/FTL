@@ -13,10 +13,10 @@ jobs:
     steps:
     -
       name: Checkout repository
-      uses: actions/checkout@v4.1.7
+      uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
     -
       name: Spell-Checking
-      uses: codespell-project/actions-codespell@master
+      uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 #v2.2
       with:
         ignore_words_file: .github/.codespellignore
         skip: ./src/database/sqlite3.c,./src/database/sqlite3.h,./src/database/shell.c,./src/lua,./src/dnsmasq,./src/tre-regex,./.git,./test/libs,./src/webserver/civetweb,./src/zip/miniz,./src/api/docs/content/external,./src/database/sqlite3_rsync.c,./package-lock.json,./src/config/tomlc17
