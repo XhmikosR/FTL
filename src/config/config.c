@@ -46,7 +46,6 @@ uint8_t last_checksum[SHA256_DIGEST_SIZE] = { 0 };
 // Private prototypes
 static bool port_in_use(const in_port_t port);
 static void reset_config_default(struct conf_item *conf_item);
-static void initConfig(struct config *conf);
 
 // Set debug flags from config struct to global debug_flags array
 // This is called whenever the config is reloaded and debug flags may have
@@ -335,14 +334,14 @@ bool compare_config_item(const enum conf_type t, const union conf_value *val1, c
 }
 
 
-void free_config(struct config *conf)
+void free_config(struct config *conf, const bool terminating)
 {
 	// Post-processing:
 	// Initialize and verify config data
 	for(unsigned int i = 0; i < CONFIG_ELEMENTS; i++)
 	{
-		// Get pointer to memory location of this conf_item (copy)
-		struct conf_item *copy_item = get_conf_item(conf, i);
+		// Get pointer to memory location of this conf_item
+		struct conf_item *conf_item = get_conf_item(conf, i);
 
 		// Free allowed values (if defined)
 		// Note: This is no necessary as we simply leave the allowed values
@@ -351,7 +350,7 @@ void free_config(struct config *conf)
 		// if(conf->a != NULL) cJSON_Delete(conf->a);
 
 		// Make a type-dependent copy of the value
-		switch(copy_item->t)
+		switch(conf_item->t)
 		{
 			case CONF_BOOL:
 			case CONF_INT:
@@ -376,18 +375,29 @@ void free_config(struct config *conf)
 				// Nothing to do
 				break;
 			case CONF_STRING_ALLOCATED:
-				free(copy_item->v.s);
-				copy_item->v.s = NULL;
-				copy_item->t = CONF_STRING; // not allocated anymore
+				// Do not free log file path if we are
+				// terminating or nothing can be logged anymore
+				if(terminating && conf_item->f & FLAG_FTL_LOG)
+					continue;
+				free(conf_item->v.s);
+				conf_item->v.s = NULL;
+				conf_item->t = CONF_STRING; // not allocated anymore
 				break;
 			case CONF_JSON_STRING_ARRAY:
-				cJSON_Delete(copy_item->v.json);
+				// Delete default JSON only when terminating.
+				// During config replacements, it is simply
+				// handed over from the old to the new config
+				// structure to avoid unnecessary memory
+				// duplications
+				if(terminating)
+					cJSON_Delete(conf_item->d.json);
+				cJSON_Delete(conf_item->v.json);
 				break;
 		}
 	}
 }
 
-static void initConfig(struct config *conf)
+void initConfig(struct config *conf)
 {
 	if(config_initialized)
 		return;
@@ -445,7 +455,7 @@ static void initConfig(struct config *conf)
 		{
 			{ get_ptr_type_str(PTR_NONE), "Pi-hole will not respond automatically on PTR requests to local interface addresses. Ensure pi.hole and/or hostname records exist elsewhere." },
 			{ get_ptr_type_str(PTR_HOSTNAME), "Serve the machine's hostname. The hostname is queried from the kernel through uname(2)->nodename. If the machine has multiple network interfaces, it can also have multiple nodenames. In this case, it is unspecified and up to the kernel which one will be returned. On Linux, the returned string is what has been set using sethostname(2) which is typically what has been set in /etc/hostname." },
-			{ get_ptr_type_str(PTR_HOSTNAMEFQDN), "Serve the machine's hostname (see limitations above) as fully qualified domain by adding the local domain. If no local domain has been defined (config option dns.domain), FTL tries to query the domain name from the kernel using getdomainname(2). If this fails, FTL appends \".no_fqdn_available\" to the hostname." },
+			{ get_ptr_type_str(PTR_HOSTNAMEFQDN), "Serve the machine's hostname (see limitations above) as fully qualified domain by adding the local domain. If no local domain has been defined (config option dns.domain.name), FTL tries to query the domain name from the kernel using getdomainname(2). If this fails, FTL appends \".no_fqdn_available\" to the hostname." },
 			{ get_ptr_type_str(PTR_PIHOLE), "Respond with \"pi.hole\"." }
 		};
 		CONFIG_ADD_ENUM_OPTIONS(conf->dns.piholePTR.a, piholePTR);
@@ -480,7 +490,7 @@ static void initConfig(struct config *conf)
 
 	conf->dns.hosts.k = "dns.hosts";
 	conf->dns.hosts.h = "Array of custom DNS records\n\n Example: [ \"127.0.0.1 mylocal\", \"192.168.0.1 therouter\" ]";
-	conf->dns.hosts.a = cJSON_CreateStringReference("Array of custom DNS records each one in HOSTS form: \"IP HOSTNAME\"");
+	conf->dns.hosts.a = cJSON_CreateStringReference("Array of custom DNS records each one in HOSTS form: \"IP HOSTNAME [HOSTNAME ...]\"");
 	conf->dns.hosts.t = CONF_JSON_STRING_ARRAY;
 	conf->dns.hosts.d.json = cJSON_CreateArray();
 	conf->dns.hosts.c = validate_dns_hosts;
@@ -499,14 +509,6 @@ static void initConfig(struct config *conf)
 	conf->dns.expandHosts.d.b = false;
 	conf->dns.expandHosts.c = validate_stub; // Only type-based checking
 
-	conf->dns.domain.k = "dns.domain";
-	conf->dns.domain.h = "The DNS domain used by your Pi-hole.\n\n This DNS domain is purely local. FTL may answer queries from its local cache and configuration but *never* forwards any requests upstream *unless* you have configured a dns.revServer exactly for this domain. In the latter case, all queries for this domain are sent exclusively to this server (including reverse lookups).\n\n For DHCP, this has two effects; firstly it causes the DHCP server to return the domain to any hosts which request it, and secondly it sets the domain which it is legal for DHCP-configured hosts to claim. The intention is to constrain hostnames so that an untrusted host on the LAN cannot advertise its name via DHCP as e.g. \"google.com\" and capture traffic not meant for it. If no domain suffix is specified, then any DHCP hostname with a domain part (ie with a period) will be disallowed and logged. If a domain is specified, then hostnames with a domain part are allowed, provided the domain part matches the suffix. In addition, when a suffix is set then hostnames without a domain part have the suffix added as an optional domain part. For instance, we can set domain=mylab.com and have a machine whose DHCP hostname is \"laptop\". The IP address for that machine is available both as \"laptop\" and \"laptop.mylab.com\".\n\n You can disable setting a domain by setting this option to an empty string.";
-	conf->dns.domain.a = cJSON_CreateStringReference("Any valid domain");
-	conf->dns.domain.t = CONF_STRING;
-	conf->dns.domain.f = FLAG_RESTART_FTL;
-	conf->dns.domain.d.s = (char*)"lan";
-	conf->dns.domain.c = validate_dns_domain;
-
 	conf->dns.bogusPriv.k = "dns.bogusPriv";
 	conf->dns.bogusPriv.h = "Should all reverse lookups for private IP ranges (i.e., 192.168.x.y, etc) which are not found in /etc/hosts or the DHCP leases file be answered with \"no such domain\" rather than being forwarded upstream?";
 	conf->dns.bogusPriv.t = CONF_BOOL;
@@ -522,7 +524,7 @@ static void initConfig(struct config *conf)
 	conf->dns.dnssec.d.b = false;
 
 	conf->dns.interface.k = "dns.interface";
-	conf->dns.interface.h = "Interface to use for DNS (see also dnsmasq.listening.mode) and DHCP (if enabled). Leave empty for auto-detection.";
+	conf->dns.interface.h = "Interface to use for DNS (see also dns.listeningMode) and DHCP (if enabled). Leave empty for auto-detection.";
 	conf->dns.interface.a = cJSON_CreateStringReference("a valid interface name");
 	conf->dns.interface.t = CONF_STRING;
 	conf->dns.interface.f = FLAG_RESTART_FTL;
@@ -592,6 +594,22 @@ static void initConfig(struct config *conf)
 	conf->dns.revServers.d.json = cJSON_CreateArray();
 	conf->dns.revServers.c = validate_dns_revServers;
 	conf->dns.revServers.f = FLAG_RESTART_FTL;
+
+	// sub-struct dns.cache
+	conf->dns.domain.name.k = "dns.domain.name";
+	conf->dns.domain.name.h = "The DNS domain used by your Pi-hole.\n\n This DNS domain is purely local. FTL may answer queries from its local cache and configuration but *never* forwards any requests upstream *unless* you have configured a dns.revServer exactly for this domain. In the latter case, all queries for this domain are sent exclusively to this server (including reverse lookups).\n\n For DHCP, this has two effects; firstly it causes the DHCP server to return the domain to any hosts which request it, and secondly it sets the domain which it is legal for DHCP-configured hosts to claim. The intention is to constrain hostnames so that an untrusted host on the LAN cannot advertise its name via DHCP as e.g. \"google.com\" and capture traffic not meant for it. If no domain suffix is specified, then any DHCP hostname with a domain part (ie with a period) will be disallowed and logged. If a domain is specified, then hostnames with a domain part are allowed, provided the domain part matches the suffix. In addition, when a suffix is set then hostnames without a domain part have the suffix added as an optional domain part. For instance, we can set domain=mylab.com and have a machine whose DHCP hostname is \"laptop\". The IP address for that machine is available both as \"laptop\" and \"laptop.mylab.com\".\n\n You can disable setting a domain by setting this option to an empty string.";
+	conf->dns.domain.name.a = cJSON_CreateStringReference("Any valid domain");
+	conf->dns.domain.name.t = CONF_STRING;
+	conf->dns.domain.name.f = FLAG_RESTART_FTL;
+	conf->dns.domain.name.d.s = (char*)"lan";
+	conf->dns.domain.name.c = validate_dns_domain;
+
+	conf->dns.domain.local.k = "dns.domain.local";
+	conf->dns.domain.local.h = "If set, the domain configured by dns.domain.name is considered local and queries for this domain are never forwarded upstream unless a dns.revServer is configured for this domain.\n\n If unset, queries for this domain are forwarded upstream to (possibly public) server which is probably not what you want *unless* you have added extra configuration for this domain *or* your upstream servers are able to handle local domains (e.g., router).";
+	conf->dns.domain.local.t = CONF_BOOL;
+	conf->dns.domain.local.f = FLAG_RESTART_FTL;
+	conf->dns.domain.local.d.b = true;
+	conf->dns.domain.local.c = validate_stub; // Only type-based checking
 
 	// sub-struct dns.cache
 	conf->dns.cache.size.k = "dns.cache.size";
@@ -724,7 +742,7 @@ static void initConfig(struct config *conf)
 
 	conf->dns.reply.blocking.v6.k = "dns.reply.blocking.IPv6";
 	conf->dns.reply.blocking.v6.h = "Custom IPv6 address for IP blocking mode";
-	conf->dns.reply.blocking.v6.a = cJSON_CreateStringReference("Avalid IPv6 address or empty string (\"\")");
+	conf->dns.reply.blocking.v6.a = cJSON_CreateStringReference("A valid IPv6 address or empty string (\"\")");
 	conf->dns.reply.blocking.v6.t = CONF_STRUCT_IN6_ADDR;
 	memset(&conf->dns.reply.blocking.v6.d.in6_addr, 0, sizeof(struct in6_addr));
 	conf->dns.reply.blocking.v6.c = validate_stub; // Only type-based checking
@@ -879,7 +897,7 @@ static void initConfig(struct config *conf)
 	conf->ntp.sync.server.a = cJSON_CreateStringReference("A valid NTP upstream server");
 	conf->ntp.sync.server.t = CONF_STRING;
 	conf->ntp.sync.server.d.s = (char*)"pool.ntp.org";
-	conf->ntp.sync.server.c = validate_stub; // Only type-based checking
+	conf->ntp.sync.server.c = validate_dns_domain_or_ip;
 
 	conf->ntp.sync.interval.k = "ntp.sync.interval";
 	conf->ntp.sync.interval.h = "Interval in seconds between successive synchronization attempts with the NTP server";
@@ -1039,42 +1057,55 @@ static void initConfig(struct config *conf)
 	conf->webserver.threads.c = validate_stub; // Only type-based checking
 
 	conf->webserver.headers.k = "webserver.headers";
-	conf->webserver.headers.h = "Additional HTTP headers added to the web server responses.\n The headers are added to all responses, including those for the API.\n Note about the default additional headers:\n - X-DNS-Prefetch-Control: off: Usually browsers proactively perform domain name resolution on links that the user may choose to follow. We disable DNS prefetching here.\n - Content-Security-Policy: [...] 'unsafe-inline' is both required by Chart.js styling some elements directly, and index.html containing some inlined Javascript code.\n - X-Frame-Options: DENY: The page can not be displayed in a frame, regardless of the site attempting to do so.\n - X-Xss-Protection: 0: Disables XSS filtering in browsers that support it. This header is usually enabled by default in browsers, and is not recommended as it can hurt the security of the site. (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-XSS-Protection).\n - X-Content-Type-Options: nosniff: Marker used by the server to indicate that the MIME types advertised in the  Content-Type headers should not be changed and be followed. This allows to opt-out of MIME type sniffing, or, in other words, it is a way to say that the webmasters knew what they were doing. Site security testers usually expect this header to be set.\n - Referrer-Policy: strict-origin-when-cross-origin: A referrer will be sent for same-site origins, but cross-origin requests will send no referrer information.\n The latter four headers are set as expected by https://securityheaders.io";
-	conf->webserver.headers.a = cJSON_CreateStringReference("array of HTTP headers");
+	conf->webserver.headers.h = "Additional HTTP headers added to the web server responses.\n\n The headers are added to all responses, including those for the API.\n Note about the default additional headers:\n - X-DNS-Prefetch-Control: off: Usually browsers proactively perform domain name resolution on links that the user may choose to follow. We disable DNS prefetching here.\n - Content-Security-Policy: [...] 'unsafe-inline' is both required by Chart.js styling some elements directly, and index.html containing some inlined Javascript code.\n - X-Frame-Options: DENY: The page can not be displayed in a frame, regardless of the site attempting to do so.\n - X-Xss-Protection: 0: Disables XSS filtering in browsers that support it. This header is usually enabled by default in browsers, and is not recommended as it can hurt the security of the site. (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-XSS-Protection).\n - X-Content-Type-Options: nosniff: Marker used by the server to indicate that the MIME types advertised in the  Content-Type headers should not be changed and be followed. This allows to opt-out of MIME type sniffing, or, in other words, it is a way to say that the webmasters knew what they were doing. Site security testers usually expect this header to be set.\n - Referrer-Policy: strict-origin-when-cross-origin: A referrer will be sent for same-site origins, but cross-origin requests will send no referrer information.\n The latter four headers are set as expected by https://securityheaders.io";
+	conf->webserver.headers.a = cJSON_CreateStringReference("An array of HTTP headers");
 	conf->webserver.headers.t = CONF_JSON_STRING_ARRAY;
 	conf->webserver.headers.f = FLAG_RESTART_FTL;
 	conf->webserver.headers.d.json = cJSON_CreateArray();
-	cJSON_AddItemReferenceToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-DNS-Prefetch-Control: off"));
-	cJSON_AddItemReferenceToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"));
-	cJSON_AddItemReferenceToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-Frame-Options: DENY"));
-	cJSON_AddItemReferenceToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-XSS-Protection: 0"));
-	cJSON_AddItemReferenceToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-Content-Type-Options: nosniff"));
-	cJSON_AddItemReferenceToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("Referrer-Policy: strict-origin-when-cross-origin"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-DNS-Prefetch-Control: off"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-Frame-Options: DENY"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-XSS-Protection: 0"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-Content-Type-Options: nosniff"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("Referrer-Policy: strict-origin-when-cross-origin"));
 	conf->webserver.headers.c = validate_stub; // Only type-based checking
 
 	conf->webserver.serve_all.k = "webserver.serve_all";
-	conf->webserver.serve_all.h = "Should the web server serve all files in webserver.paths.webroot directory? If disabled, only files within the path defined through webserver.paths.webhome and /api will be served.";
+	conf->webserver.serve_all.h = "Should the web server serve all files in webserver.paths.webroot directory?\n\n If disabled, only files within the path defined through webserver.paths.webhome and /api will be served.";
 	conf->webserver.serve_all.t = CONF_BOOL;
 	conf->webserver.serve_all.d.b = false;
 	conf->webserver.serve_all.c = validate_stub;
 
-	// sub-struct session
+	conf->webserver.advancedOpts.k = "webserver.advancedOpts";
+	conf->webserver.advancedOpts.h = "Additional options passed directly to the web server.\n\n This can be used to set any option supported by the underlying web server (CivetWeb). See the CivetWeb documentation for a list of supported options. The options are passed as an array of strings, where each string is an option in the form \"<option>=<value>\". Be aware that this is an advanced option and that setting options here may break the web server if invalid or conflicting with other settings applied based on other settings in this file. The config options specified here are added to the end of the passed options. This makes it possible to overwrite settings set by Pi-hole (only the last values is used when a config option is specified multiple times). Use with caution.\n\n Example: [ \"ssl_protocol_version=4\", \"ssl_cipher_list=AES128:!MD5\" ]";
+	conf->webserver.advancedOpts.a = cJSON_CreateStringReference("An array of valid CivetWeb options");
+	conf->webserver.advancedOpts.t = CONF_JSON_STRING_ARRAY;
+	conf->webserver.advancedOpts.f = FLAG_RESTART_FTL;
+	conf->webserver.advancedOpts.d.json = cJSON_CreateArray();
+	conf->webserver.advancedOpts.c = validate_stub; // Only type-based checking
+
+	conf->webserver.tls.validity.k = "webserver.tls.validity";
+	conf->webserver.tls.validity.h = "Number of days the automatically generated self-signed TLS/SSL certificate will be valid for.\n\n Defaults to 47 days. A minimum of 7 days is enforced.\n Some devices may enforce shorter validity ranges. Note that defining a lower validity range may require you to accept the self-signed certificate more often in your browser.\n Pi-hole will regenerate certificates it created itself two days prior to expiration. If you are using your own certificate, you need to regenerate it yourself. In this case, it is advised to set the validity range to 0 days, so that Pi-hole does not try to regenerate your certificate. If you set the validity range to 0 days and still try to generate a certificate, Pi-hole will set a fixed validity range of roughly 30 years for the certificate.";
+	conf->webserver.tls.validity.t = CONF_UINT;
+	conf->webserver.tls.validity.d.ui = 47; // 47 days
+	conf->webserver.tls.validity.c = validate_ui_min_7_or_0;
+
+	// sub-struct webserver.session
 	conf->webserver.session.timeout.k = "webserver.session.timeout";
-	conf->webserver.session.timeout.h = "Session timeout in seconds. If a session is inactive for more than this time, it will be terminated. Sessions are continuously refreshed by the web interface, preventing sessions from timing out while the web interface is open.\n\n This option may also be used to make logins persistent for long times, e.g. 86400 seconds (24 hours), 604800 seconds (7 days) or 2592000 seconds (30 days). Note that the total number of concurrent sessions is limited so setting this value too high may result in users being rejected and unable to log in if there are already too many sessions active.";
+	conf->webserver.session.timeout.h = "Session timeout in seconds.\n\n If a session is inactive for more than this time, it will be terminated. Sessions are continuously refreshed by the web interface, preventing sessions from timing out while the web interface is open.\n\n This option may also be used to make logins persistent for long times, e.g. 86400 seconds (24 hours), 604800 seconds (7 days) or 2592000 seconds (30 days). Note that the total number of concurrent sessions is limited so setting this value too high may result in users being rejected and unable to log in if there are already too many sessions active.";
 	conf->webserver.session.timeout.a = cJSON_CreateStringReference("A positive integer value in seconds");
 	conf->webserver.session.timeout.t = CONF_UINT;
 	conf->webserver.session.timeout.d.ui = 1800u;
 	conf->webserver.session.timeout.c = validate_stub; // Only type-based checking
 
 	conf->webserver.session.restore.k = "webserver.session.restore";
-	conf->webserver.session.restore.h = "Should Pi-hole backup and restore sessions from the database? This is useful if you want to keep your sessions after a restart of the web interface.";
-	conf->webserver.session.restore.a = cJSON_CreateStringReference("true or false");	
+	conf->webserver.session.restore.h = "Should Pi-hole backup and restore sessions from the database?\n\n This is useful if you want to keep your sessions after a restart of the web interface.";
 	conf->webserver.session.restore.t = CONF_BOOL;
 	conf->webserver.session.restore.d.b = true;
 	conf->webserver.session.restore.c = validate_stub; // Only type-based checking
 
 	conf->webserver.tls.cert.k = "webserver.tls.cert";
-	conf->webserver.tls.cert.h = "Path to the TLS (SSL) certificate file. All directories along the path must be readable and accessible by the user running FTL (typically 'pihole'). This option is only required when at least one of webserver.port is TLS. The file must be in PEM format, and it must have both, private key and certificate (the *.pem file created must contain a 'CERTIFICATE' section as well as a 'RSA PRIVATE KEY' section).\n\n The *.pem file can be created using `cp server.crt server.pem && cat server.key >> server.pem` if you have these files instead";
+	conf->webserver.tls.cert.h = "Path to the TLS (SSL) certificate file.\n\n All directories along the path must be readable and accessible by the user running FTL (typically 'pihole'). This option is only required when at least one of webserver.port is TLS. The file must be in PEM format, and it must have both, private key and certificate (the *.pem file created must contain a 'CERTIFICATE' section as well as a 'RSA PRIVATE KEY' section).\n\n The *.pem file can be created using `cp server.crt server.pem && cat server.key >> server.pem` if you have these files instead";
 	conf->webserver.tls.cert.a = cJSON_CreateStringReference("A valid TLS certificate file (*.pem)");
 	conf->webserver.tls.cert.f = FLAG_RESTART_FTL;
 	conf->webserver.tls.cert.t = CONF_STRING;
@@ -1153,7 +1184,7 @@ static void initConfig(struct config *conf)
 
 	conf->webserver.api.password.k = "webserver.api.password";
 	conf->webserver.api.password.h = "Pi-hole web interface and API password. When set to something different than \""PASSWORD_VALUE"\", this property will compute the corresponding password hash to set webserver.api.pwhash";
-	conf->webserver.api.password.a = cJSON_CreateStringReference("Avalid Pi-hole password");
+	conf->webserver.api.password.a = cJSON_CreateStringReference("A valid Pi-hole password");
 	conf->webserver.api.password.t = CONF_PASSWORD;
 	conf->webserver.api.password.f = FLAG_PSEUDO_ITEM | FLAG_INVALIDATE_SESSIONS;
 	conf->webserver.api.password.d.s = (char*)"";
@@ -1385,6 +1416,18 @@ static void initConfig(struct config *conf)
 	conf->misc.readOnly.d.b = false;
 	conf->misc.readOnly.c = validate_stub; // Only type-based checking
 
+	conf->misc.normalizeCPU.k = "misc.normalizeCPU";
+	conf->misc.normalizeCPU.h = "Should FTL normalize reported CPU usage?\n\n On multi-core systems, a high workload can lead to CPU usage numbers exceeding 100% (e.g., 200% on a quad-core system if two out of four cores are fully utilized). This may look alarming at first glance even though the system is not actually overloaded. Enabling this setting will divide the CPU usage by the number of cores, leading to more intuitive numbers (e.g., 50% for the same load on a quad-core system).\n Note that this setting only affects how CPU usage is *reported*, it does not change the actual CPU usage.";
+	conf->misc.normalizeCPU.t = CONF_BOOL;
+	conf->misc.normalizeCPU.d.b = true;
+	conf->misc.normalizeCPU.c = validate_stub; // Only type-based checking
+
+	conf->misc.hide_dnsmasq_warn.k = "misc.hide_dnsmasq_warn";
+	conf->misc.hide_dnsmasq_warn.h = "Should FTL hide warnings coming from dnsmasq?\n\n By default, FTL reports warnings coming from the embedded dnsmasq DNS server to the FTL log file. These warnings can be useful to identify misconfigurations or problems with the DNS server. However, some warnings may be harmless and can be ignored in certain setups. Enabling this setting will hide all dnsmasq warnings.";
+	conf->misc.hide_dnsmasq_warn.t = CONF_BOOL;
+	conf->misc.hide_dnsmasq_warn.d.b = false;
+	conf->misc.hide_dnsmasq_warn.c = validate_stub; // Only type-based checking
+
 	// sub-struct misc.check
 	conf->misc.check.load.k = "misc.check.load";
 	conf->misc.check.load.h = "Pi-hole is very lightweight on resources. Nevertheless, this does not mean that you should run Pi-hole on a server that is otherwise extremely busy as queuing on the system can lead to unnecessary delays in DNS operation as the system becomes less and less usable as the system load increases because all resources are permanently in use. To account for this, FTL regularly checks the system load. To bring this to your attention, FTL warns about excessive load when the 15 minute system load average exceeds the number of cores.\n\n This check can be disabled with this setting.";
@@ -1582,6 +1625,12 @@ static void initConfig(struct config *conf)
 	conf->debug.netlink.d.b = false;
 	conf->debug.netlink.c = validate_stub; // Only type-based checking
 
+	conf->debug.timing.k = "debug.timing";
+	conf->debug.timing.h = "Print timing information from various parts of FTL";
+	conf->debug.timing.t = CONF_BOOL;
+	conf->debug.timing.d.b = false;
+	conf->debug.timing.c = validate_stub; // Only type-based checking
+
 	conf->debug.all.k = "debug.all";
 	conf->debug.all.h = "Set all debug flags at once. This is a convenience option to enable all debug flags at once. Note that this option is not persistent, setting it to true will enable all *remaining* debug flags but unsetting it will disable *all* debug flags.";
 	conf->debug.all.t = CONF_ALL_DEBUG_BOOL;
@@ -1593,7 +1642,7 @@ static void initConfig(struct config *conf)
 	for(unsigned int i = 0; i < CONFIG_ELEMENTS; i++)
 	{
 		// Get pointer to memory location of this conf_item
-		struct conf_item *conf_item = get_conf_item(&config, i);
+		struct conf_item *conf_item = get_conf_item(conf, i);
 
 		// Initialize config value with default one for all *except* the log file path
 		if(conf_item != &conf->files.log.ftl)
@@ -1666,7 +1715,6 @@ static void initConfig(struct config *conf)
 		{
 			conf_item->a = cJSON_CreateStringReference("true or false");
 		}
-	
 	}
 }
 
@@ -1873,6 +1921,7 @@ bool getLogFilePath(bool try_read)
 	config.files.log.ftl.d.s = (char*)"/var/log/pihole/FTL.log";
 	config.files.log.ftl.v.s = config.files.log.ftl.d.s;
 	config.files.log.ftl.c = validate_filepath;
+	config.files.log.ftl.f = FLAG_FTL_LOG;
 
 	// Check if the config file contains a different path
 	if(try_read && !getLogFilePathTOML())
@@ -1957,7 +2006,7 @@ void replace_config(struct config *newconf)
 	memcpy(&config, newconf, sizeof(struct config));
 
 	// Free old backup struct
-	free_config(&old_conf);
+	free_config(&old_conf, false);
 
 	// Unlock shared memory
 	unlock_shm();
@@ -2017,7 +2066,7 @@ void reread_config(void)
 	{
 		// New configuration is invalid, restore old one
 		log_debug(DEBUG_CONFIG, "Modified config file is invalid, discarding and overwriting with current configuration");
-		free_config(&conf_copy);
+		free_config(&conf_copy, false);
 	}
 
 	// Write the config file back to disk to ensure that all options and
